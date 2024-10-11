@@ -1,3 +1,37 @@
+# Overview
+
+This application provides a RESTful API for managing OIDC (OpenID Connect) connectors with Dex, an open-source OIDC provider. It serves as a backend service that allows users to create, update, delete, and list OIDC connectors over HTTP.
+
+## Key Features
+
+1. **Connector Types**:
+    - The application supports multiple types of OIDC connectors, including:
+        - **General OIDC Connector**: Provides standard OIDC functionality with customizable issuer.
+        - **EntraID OIDC Connector**: Integrates with Microsoft Entra (Azure AD) and fetches the issuer dynamically based on the specified tenant ID.
+        - **Google Workspace OIDC Connector**: Facilitates OIDC authentication for Google Workspace applications.
+
+2. **Connector Management**:
+    - **Create**: Users can add new connectors by providing the necessary configuration parameters such as client ID and secret.
+    - **Update**: Allows for updating the configuration of existing connectors while preserving connector identity.
+    - **Delete**: Users can remove connectors by their IDs, effectively managing the OIDC integrations.
+    - **List**: Retrieve all configured connectors or filter by type, enabling easy visibility into the existing configurations.
+
+3. **Dynamic Issuer Fetching**:
+    - The EntraID connector type automatically fetches the issuer URL from the Microsoft endpoint based on the provided tenant ID, simplifying the setup process.
+
+4. **Validation**:
+    - The application performs thorough validations on incoming data to ensure that all required fields are provided and adhere to expected formats.
+
+5. **Logging**:
+    - Utilizing the Logrus logging framework, the application provides detailed logs for operations, aiding in the monitoring and debugging of OIDC connector management activities.
+
+## Usage
+
+The application can be interacted with through standard HTTP requests, allowing for easy integration with various clients and tools. The API endpoints allow for operations including creating, updating, deleting, and listing connectors based on the user's needs.
+
+## Conclusion
+
+This OIDC connector management application provides a streamlined and efficient way to integrate with various identity providers using OIDC. With support for dynamic issuer retrieval and comprehensive validation, it simplifies the setup process and enhances the reliability of authentication services. Whether for generic OIDC applications or specific implementations like Google Workspace or EntraID, this application provides the flexibility and functionality necessary for modern identity management solutions.
 ## **1. How to Add Connectors**
 
 ### a. **Add General OIDC Connector**
@@ -135,5 +169,3 @@ In summary, the following `curl` commands can be used to interact with the OIDC 
   ```bash
   curl -X GET http://localhost:8080/list/oidc
   ```
-
-Make sure to replace placeholders like `your-client-id` and `your-client-secret` with actual values appropriate for your setup.
