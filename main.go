@@ -160,6 +160,13 @@ func (dc *DexClient) CreateOIDCConnector(params map[string]string) (*dexapi.Crea
 			connectorID = params["id"]
 			connectorName = params["name"]
 		case "entraid":
+			if params["Issuer"] == "" && params["TenantID"] != "" {
+				issuer, err := fetchEntraIDIssuer(params["TenantID"], dc.logger)
+				if err != nil {
+					return nil, fmt.Errorf("failed to fetch issuer for entraid: %w", err)
+				}
+				params["Issuer"] = issuer
+			}
 			oidcConfig = OIDCConfig{
 				Issuer:       params["Issuer"],
 				ClientID:     params["ClientID"],
@@ -290,6 +297,13 @@ func (dc *DexClient) UpdateOIDCConnector(connectorID string, params map[string]s
 	case "oidc":
 		switch connectorSubType {
 		case "google-workspace", "entraid", "general":
+			if connectorSubType == "entraid" && params["Issuer"] == "" && params["TenantID"] != "" {
+				issuer, err := fetchEntraIDIssuer(params["TenantID"], dc.logger)
+				if err != nil {
+					return nil, fmt.Errorf("failed to fetch issuer for entraid: %w", err)
+				}
+				params["Issuer"] = issuer
+			}
 			newOIDCConfig = OIDCConfig{
 				Issuer:       params["Issuer"],
 				ClientID:     params["ClientID"],
