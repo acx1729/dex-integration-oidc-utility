@@ -24,7 +24,8 @@ import (
 
 // OIDCConfig represents the configuration required for an OIDC connector.
 type OIDCConfig struct {
-	Issuer       string `json:"issuer"`
+	Issuer       string `json:"issuer,omitempty"`
+	TenantID     string `json:"tenantID,omitempty"` // Added TenantID for entraid sub-type
 	ClientID     string `json:"clientID"`
 	ClientSecret string `json:"clientSecret"`
 }
@@ -33,8 +34,8 @@ type OIDCConfig struct {
 type CreateConnectorRequest struct {
 	ConnectorType    string `json:"connector_type" validate:"required,oneof=oidc"`                                  // 'oidc' is supported for now
 	ConnectorSubType string `json:"connector_sub_type" validate:"omitempty,oneof=general google-workspace entraid"` // Optional sub-type
-	Issuer           string `json:"issuer" validate:"omitempty,url"`
-	TenantID         string `json:"tenant_id" validate:"omitempty,uuid"`
+	Issuer           string `json:"issuer,omitempty" validate:"omitempty,url"`
+	TenantID         string `json:"tenant_id,omitempty" validate:"omitempty,uuid"`
 	ClientID         string `json:"client_id" validate:"required"`
 	ClientSecret     string `json:"client_secret" validate:"required"`
 	ID               string `json:"id,omitempty"`   // Optional
@@ -142,70 +143,65 @@ func (dc *DexClient) Close() error {
 
 // CreateOIDCConnector creates a new OIDC connector in Dex based on connector type and parameters.
 func (dc *DexClient) CreateOIDCConnector(params map[string]string) (*dexapi.CreateConnectorResp, error) {
-	connectorType := strings.ToLower(params["ConnectorType"])
 	connectorSubType := strings.ToLower(params["ConnectorSubType"])
 
 	var oidcConfig OIDCConfig
 	var connectorID, connectorName string
 
-	switch connectorType {
-	case "oidc":
-		switch connectorSubType {
-		case "google-workspace":
-			oidcConfig = OIDCConfig{
-				Issuer:       params["Issuer"],
-				ClientID:     params["ClientID"],
-				ClientSecret: params["ClientSecret"],
-			}
-			connectorID = params["id"]
-			connectorName = params["name"]
-		case "entraid":
-			if params["Issuer"] == "" && params["TenantID"] != "" {
-				issuer, err := fetchEntraIDIssuer(params["TenantID"], dc.logger)
-				if err != nil {
-					return nil, fmt.Errorf("failed to fetch issuer for entraid: %w", err)
-				}
-				params["Issuer"] = issuer
-			}
-			oidcConfig = OIDCConfig{
-				Issuer:       params["Issuer"],
-				ClientID:     params["ClientID"],
-				ClientSecret: params["ClientSecret"],
-			}
-			connectorID = params["id"]
-			connectorName = params["name"]
-		case "general":
-			oidcConfig = OIDCConfig{
-				Issuer:       params["Issuer"],
-				ClientID:     params["ClientID"],
-				ClientSecret: params["ClientSecret"],
-			}
-			connectorID = params["id"]
-			connectorName = params["name"]
-
-			if connectorID == "" {
-				connectorID = "default-oidc"
-			}
-			if connectorName == "" {
-				connectorName = "Default OIDC Connector"
-			}
-		default:
-			return nil, fmt.Errorf("unsupported connector_sub_type: %s", connectorSubType)
+	switch connectorSubType {
+	case "general":
+		// Required: issuer, clientID, clientSecret
+		oidcConfig = OIDCConfig{
+			Issuer:       params["Issuer"],
+			ClientID:     params["ClientID"],
+			ClientSecret: params["ClientSecret"],
 		}
+		connectorID = params["id"]
+		connectorName = params["name"]
+
+		if connectorID == "" {
+			connectorID = "default-oidc"
+		}
+		if connectorName == "" {
+			connectorName = "OIDC SSO"
+		}
+
+	case "entraid":
+		// Required: tenantID, clientID, clientSecret
+		oidcConfig = OIDCConfig{
+			TenantID:     params["TenantID"],
+			ClientID:     params["ClientID"],
+			ClientSecret: params["ClientSecret"],
+		}
+		connectorID = params["id"]
+		connectorName = params["name"]
+
+		if connectorID == "" {
+			connectorID = "entraid-oidc"
+		}
+		if connectorName == "" {
+			connectorName = "Microsoft AzureAD SSO"
+		}
+
+	case "google-workspace":
+		// Required: clientID, clientSecret
+		oidcConfig = OIDCConfig{
+			ClientID:     params["ClientID"],
+			ClientSecret: params["ClientSecret"],
+		}
+		connectorID = params["id"]
+		connectorName = params["name"]
+
+		if connectorID == "" {
+			connectorID = "google-workspace-oidc"
+		}
+		if connectorName == "" {
+			connectorName = "Google Workspace SSO"
+		}
+
 	default:
-		return nil, fmt.Errorf("unsupported connector_type: %s", connectorType)
+		return nil, fmt.Errorf("unsupported connector_sub_type: %s", connectorSubType)
 	}
-
-	// If ID is still empty (for non-general types), set a default or handle accordingly
-	if connectorID == "" {
-		connectorID = fmt.Sprintf("%s-connector", connectorSubType) // e.g., "google-workspace-connector"
-	}
-	if connectorName == "" {
-		connectorName = fmt.Sprintf("%s Connector", strings.Title(connectorSubType)) // e.g., "Google-Workspace Connector"
-	}
-
-	// **[Optional]** Add logging to verify connectorID and connectorName
-	dc.logger.Debugf("Connector ID: %s, Connector Name: %s", connectorID, connectorName)
 
 	// Serialize the OIDCConfig to JSON.
 	configBytes, err := json.Marshal(oidcConfig)
@@ -297,7 +293,7 @@ func (dc *DexClient) UpdateOIDCConnector(connectorID string, params map[string]s
 	case "oidc":
 		switch connectorSubType {
 		case "google-workspace", "entraid", "general":
-			if connectorSubType == "entraid" && params["Issuer"] == "" && params["TenantID"] != "" {
+			if connectorSubType == "entraid" && params["TenantID"] != "" && params["Issuer"] == "" {
 				issuer, err := fetchEntraIDIssuer(params["TenantID"], dc.logger)
 				if err != nil {
 					return nil, fmt.Errorf("failed to fetch issuer for entraid: %w", err)
@@ -306,6 +302,7 @@ func (dc *DexClient) UpdateOIDCConnector(connectorID string, params map[string]s
 			}
 			newOIDCConfig = OIDCConfig{
 				Issuer:       params["Issuer"],
+				TenantID:     params["TenantID"], // Ensure TenantID is set for entraid
 				ClientID:     params["ClientID"],
 				ClientSecret: params["ClientSecret"],
 			}
@@ -426,49 +423,91 @@ func (dc *DexClient) CreateConnectorHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Set the ConnectorType from URL path
-	reqData.ConnectorType = connectorType
+	reqData.ConnectorType = connectorTypeLower
 
-	// Set the ConnectorSubType from URL path or default to 'general'
+	// Determine the connector_sub_type
 	connectorSubTypeLower := "general" // default
-	if hasSubType {
+	if hasSubType && strings.TrimSpace(connectorSubType) != "" {
 		connectorSubTypeLower = strings.ToLower(connectorSubType)
+	} else {
+		dc.logger.Infof("No connector_sub_type specified. Defaulting to 'general'")
 	}
+
+	// Set the ConnectorSubType in the request data
 	reqData.ConnectorSubType = connectorSubTypeLower
 
-	// Validate the request payload
+	// Validate that the connector_sub_type is supported
+	if !isSupportedSubType(connectorTypeLower, connectorSubTypeLower) {
+		dc.logger.Warnf("Unsupported connector_sub_type '%s' for connector_type '%s'", connectorSubTypeLower, connectorTypeLower)
+		http.Error(w, fmt.Sprintf("unsupported connector_sub_type '%s' for connector_type '%s'", connectorSubTypeLower, connectorTypeLower), http.StatusBadRequest)
+		return
+	}
+
+	// Perform subtype-specific validation and set default values
+	switch connectorSubTypeLower {
+	case "general":
+		// Required: issuer, client_id, client_secret
+		if strings.TrimSpace(reqData.Issuer) == "" {
+			dc.logger.Warn("Missing 'issuer' for 'general' OIDC connector")
+			http.Error(w, "issuer is required for 'general' OIDC connector", http.StatusBadRequest)
+			return
+		}
+		// client_id and client_secret are already validated as required in the struct
+
+		// Set default id and name if not provided
+		if strings.TrimSpace(reqData.ID) == "" {
+			reqData.ID = "default-oidc"
+			dc.logger.Infof("No 'id' provided. Defaulting to '%s'", reqData.ID)
+		}
+		if strings.TrimSpace(reqData.Name) == "" {
+			reqData.Name = "OIDC SSO"
+			dc.logger.Infof("No 'name' provided. Defaulting to '%s'", reqData.Name)
+		}
+
+	case "entraid":
+		// Required: tenant_id, client_id, client_secret
+		if strings.TrimSpace(reqData.TenantID) == "" {
+			dc.logger.Warn("Missing 'tenant_id' for 'entraid' OIDC connector")
+			http.Error(w, "tenant_id is required for 'entraid' OIDC connector", http.StatusBadRequest)
+			return
+		}
+		// client_id and client_secret are already validated as required in the struct
+
+		// Set default id and name if not provided
+		if strings.TrimSpace(reqData.ID) == "" {
+			reqData.ID = "entraid-oidc"
+			dc.logger.Infof("No 'id' provided. Defaulting to '%s'", reqData.ID)
+		}
+		if strings.TrimSpace(reqData.Name) == "" {
+			reqData.Name = "Microsoft AzureAD SSO"
+			dc.logger.Infof("No 'name' provided. Defaulting to '%s'", reqData.Name)
+		}
+
+	case "google-workspace":
+		// Required: client_id, client_secret
+		// No additional fields needed
+		// client_id and client_secret are already validated as required in the struct
+
+		// Set default id and name if not provided
+		if strings.TrimSpace(reqData.ID) == "" {
+			reqData.ID = "google-workspace-oidc"
+			dc.logger.Infof("No 'id' provided. Defaulting to '%s'", reqData.ID)
+		}
+		if strings.TrimSpace(reqData.Name) == "" {
+			reqData.Name = "Google Workspace SSO"
+			dc.logger.Infof("No 'name' provided. Defaulting to '%s'", reqData.Name)
+		}
+	}
+
+	// Additional validation through validator
 	if err := dc.validate.Struct(reqData); err != nil {
 		dc.logger.Errorf("Validation error in CreateConnectorHandler: %v", err)
 		http.Error(w, fmt.Sprintf("validation error: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	// Additional conditional validation based on connector_type and connector_sub_type
-	switch connectorTypeLower {
-	case "oidc":
-		if connectorSubTypeLower == "general" {
-			// For 'general', either Issuer or TenantID is required
-			if reqData.Issuer == "" && reqData.TenantID == "" {
-				dc.logger.Warn("Missing issuer or tenant_id for general OIDC connector")
-				http.Error(w, "issuer or tenant_id is required for general OIDC connector", http.StatusBadRequest)
-				return
-			}
-		} else {
-			// For specific sub-types like 'google-workspace' or 'entraid', ensure Issuer is provided
-			if reqData.Issuer == "" {
-				dc.logger.Warnf("Missing issuer for %s connector", connectorSubTypeLower)
-				http.Error(w, fmt.Sprintf("issuer is required for %s connector", connectorSubTypeLower), http.StatusBadRequest)
-				return
-			}
-		}
-	default:
-		// This case should not occur due to earlier check, but added for completeness
-		dc.logger.Warnf("Unsupported connector type during validation: %s", connectorTypeLower)
-		http.Error(w, fmt.Sprintf("unsupported connector type: %s", connectorTypeLower), http.StatusBadRequest)
-		return
-	}
-
 	// Prepare parameters map with corrected key names and include sub-type
-	params := map[string]string{
+	paramsMap := map[string]string{
 		"Issuer":           reqData.Issuer,
 		"TenantID":         reqData.TenantID,
 		"ClientID":         reqData.ClientID,
@@ -480,12 +519,12 @@ func (dc *DexClient) CreateConnectorHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	// **[Optional]** Add logging to verify params
-	dc.logger.Debugf("Creating connector with params: %+v", params)
+	dc.logger.Debugf("Creating connector with params: %+v", paramsMap)
 
 	// Use the creator function to create the connector
-	resp, err := creator(dc, params)
+	resp, err := creator(dc, paramsMap)
 	if err != nil {
-		dc.logger.Errorf("Error creating connector (%s/%s): %v", connectorType, connectorSubTypeLower, err)
+		dc.logger.Errorf("Error creating connector (%s/%s): %v", connectorTypeLower, connectorSubTypeLower, err)
 		http.Error(w, fmt.Sprintf("error creating connector: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -504,16 +543,42 @@ func (dc *DexClient) CreateConnectorHandler(w http.ResponseWriter, r *http.Reque
 	dc.logger.Debug("CreateConnectorHandler response sent to client")
 }
 
+// isSupportedSubType checks if a given sub-type is supported for a connector type.
+func isSupportedSubType(connectorType, subType string) bool {
+	subTypes, exists := SupportedConnectors[connectorType]
+	if !exists {
+		return false
+	}
+	for _, st := range subTypes {
+		if strings.ToLower(st) == subType {
+			return true
+		}
+	}
+	return false
+}
+
+// ListAndDescribeConnectorsHandler handles the GET /list and GET /list/{connector_type} endpoints.
 // ListAndDescribeConnectorsHandler handles the GET /list and GET /list/{connector_type} endpoints.
 func (dc *DexClient) ListAndDescribeConnectorsHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	connectorType, exists := vars["connector_type"]
 
+	// Log the requested connector_type
+	if exists {
+		dc.logger.Infof("Received request to list connectors of type: %s", connectorType)
+	} else {
+		dc.logger.Info("Received request to list all connectors")
+	}
+
+	// Retrieve the list of connectors from Dex
 	connectors, err := dc.ListConnectors()
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error listing connectors: %v", err), http.StatusInternalServerError)
+		dc.logger.Errorf("Error retrieving connectors: %v", err)
+		http.Error(w, fmt.Sprintf("Error retrieving connectors: %v", err), http.StatusInternalServerError)
 		return
 	}
+
+	dc.logger.Infof("Total connectors retrieved from Dex: %d", len(connectors))
 
 	type ConnectorInfo struct {
 		ID       string `json:"id"`
@@ -526,8 +591,11 @@ func (dc *DexClient) ListAndDescribeConnectorsHandler(w http.ResponseWriter, r *
 	var connectorInfos []ConnectorInfo
 
 	for _, connector := range connectors {
-		// If connector_type is specified in the path, filter by connector.Type
+		dc.logger.Debugf("Processing connector: ID=%s, Type=%s, Name=%s", connector.Id, connector.Type, connector.Name)
+
+		// If connector_type is specified, filter connectors by type
 		if exists && strings.ToLower(connectorType) != strings.ToLower(connector.Type) {
+			dc.logger.Debugf("Skipping connector (ID=%s) due to type mismatch: expected=%s, actual=%s", connector.Id, connectorType, connector.Type)
 			continue
 		}
 
@@ -537,38 +605,45 @@ func (dc *DexClient) ListAndDescribeConnectorsHandler(w http.ResponseWriter, r *
 			Name: connector.Name,
 		}
 
-		// Attempt to unmarshal the Config based on connector type.
-		if connector.Type == "oidc" {
+		// If the connector is of type "oidc", attempt to extract Issuer and ClientID
+		if strings.ToLower(connector.Type) == "oidc" {
 			var config OIDCConfig
-			if err := json.Unmarshal(connector.Config, &config); err == nil {
+			if err := json.Unmarshal(connector.Config, &config); err != nil {
+				dc.logger.Errorf("Failed to unmarshal OIDC config for connector (%s): %v", connector.Id, err)
+			} else {
 				info.Issuer = config.Issuer
 				info.ClientID = config.ClientID
-				// ClientSecret is omitted for security reasons.
-			} else {
-				dc.logger.Errorf("Failed to unmarshal config for connector (%s): %v", connector.Id, err)
+				// Note: Omitting ClientSecret for security reasons
 			}
 		}
 
 		connectorInfos = append(connectorInfos, info)
 	}
 
-	// If connector_type is specified, ensure that the response is limited to that type
+	// If a specific connector_type was requested but no connectors found, return 404
 	if exists && len(connectorInfos) == 0 {
-		http.Error(w, fmt.Sprintf("No connectors found for connector_type: %s", connectorType), http.StatusNotFound)
+		dc.logger.Warnf("No connectors found for type: %s", connectorType)
+		http.Error(w, fmt.Sprintf("No connectors found for type: %s", connectorType), http.StatusNotFound)
 		return
 	}
 
+	// Marshal the connectorInfos to JSON
 	response, err := json.Marshal(connectorInfos)
 	if err != nil {
-		dc.logger.Errorf("Error marshaling connectors: %v", err)
-		http.Error(w, fmt.Sprintf("Error marshaling connectors: %v", err), http.StatusInternalServerError)
+		dc.logger.Errorf("Error marshaling connector information: %v", err)
+		http.Error(w, fmt.Sprintf("Error preparing response: %v", err), http.StatusInternalServerError)
 		return
 	}
 
+	// Set the appropriate headers and write the response
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(response)
+	if _, err := w.Write(response); err != nil {
+		dc.logger.Errorf("Error writing response to client: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
 
-	dc.logger.Debug("ListConnectorsHandler response sent to client")
+	dc.logger.Debug("Successfully sent connector list to client")
 }
 
 // UpdateConnectorByIDHandler handles the updating of a connector based on connector_id in the path.
@@ -595,6 +670,51 @@ func (dc *DexClient) UpdateConnectorByIDHandler(w http.ResponseWriter, r *http.R
 		reqData.ConnectorType = "oidc"
 	}
 
+	// Determine the connector_sub_type
+	connectorSubTypeLower := reqData.ConnectorSubType
+	if strings.TrimSpace(connectorSubTypeLower) == "" {
+		connectorSubTypeLower = "general" // default
+	}
+
+	reqData.ConnectorSubType = strings.ToLower(connectorSubTypeLower)
+
+	// Validate that the connector_sub_type is supported
+	if !isSupportedSubType(strings.ToLower(reqData.ConnectorType), connectorSubTypeLower) {
+		dc.logger.Warnf("Unsupported connector_sub_type '%s' for connector_type '%s'", connectorSubTypeLower, reqData.ConnectorType)
+		http.Error(w, fmt.Sprintf("unsupported connector_sub_type '%s' for connector_type '%s'", connectorSubTypeLower, reqData.ConnectorType), http.StatusBadRequest)
+		return
+	}
+
+	// Perform subtype-specific validation and set default values if needed
+	switch reqData.ConnectorSubType {
+	case "general":
+		// Required: issuer, client_id, client_secret
+		if strings.TrimSpace(reqData.Issuer) == "" {
+			dc.logger.Warn("Missing 'issuer' for 'general' OIDC connector update")
+			http.Error(w, "issuer is required for 'general' OIDC connector update", http.StatusBadRequest)
+			return
+		}
+		// client_id and client_secret are already validated as required in the struct
+
+	case "entraid":
+		// Required: tenant_id, client_id, client_secret
+		if strings.TrimSpace(reqData.TenantID) == "" {
+			dc.logger.Warn("Missing 'tenant_id' for 'entraid' OIDC connector update")
+			http.Error(w, "tenant_id is required for 'entraid' OIDC connector update", http.StatusBadRequest)
+			return
+		}
+		// client_id and client_secret are already validated as required in the struct
+
+	case "google-workspace":
+		// Required: client_id, client_secret
+		// No additional fields needed
+		// client_id and client_secret are already validated as required in the struct
+
+	default:
+		http.Error(w, fmt.Sprintf("unsupported connector_sub_type: %s", reqData.ConnectorSubType), http.StatusBadRequest)
+		return
+	}
+
 	// Validate the request payload
 	if err := dc.validate.Struct(reqData); err != nil {
 		dc.logger.Errorf("Validation error in UpdateConnectorByIDHandler: %v", err)
@@ -602,37 +722,8 @@ func (dc *DexClient) UpdateConnectorByIDHandler(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// Additional conditional validation based on connector_type and connector_sub_type
-	switch strings.ToLower(reqData.ConnectorType) {
-	case "oidc":
-		switch strings.ToLower(reqData.ConnectorSubType) {
-		case "google-workspace", "entraid", "general":
-			if strings.ToLower(reqData.ConnectorSubType) == "general" {
-				// For 'general', either Issuer or TenantID is required
-				if reqData.Issuer == "" && reqData.TenantID == "" {
-					dc.logger.Warn("Missing issuer or tenant_id for general OIDC connector update")
-					http.Error(w, "issuer or tenant_id is required for general OIDC connector update", http.StatusBadRequest)
-					return
-				}
-			} else {
-				// For specific sub-types like 'google-workspace' or 'entraid', ensure Issuer is provided
-				if reqData.Issuer == "" {
-					dc.logger.Warnf("Missing issuer for %s connector update", reqData.ConnectorSubType)
-					http.Error(w, fmt.Sprintf("issuer is required for %s connector update", reqData.ConnectorSubType), http.StatusBadRequest)
-					return
-				}
-			}
-		default:
-			http.Error(w, fmt.Sprintf("unsupported connector_sub_type: %s", reqData.ConnectorSubType), http.StatusBadRequest)
-			return
-		}
-	default:
-		http.Error(w, fmt.Sprintf("unsupported connector type: %s", reqData.ConnectorType), http.StatusBadRequest)
-		return
-	}
-
 	// Prepare parameters map
-	params := map[string]string{
+	paramsMap := map[string]string{
 		"Issuer":           reqData.Issuer,
 		"TenantID":         reqData.TenantID,
 		"ClientID":         reqData.ClientID,
@@ -644,7 +735,7 @@ func (dc *DexClient) UpdateConnectorByIDHandler(w http.ResponseWriter, r *http.R
 	}
 
 	// Update the connector
-	resp, err := dc.UpdateOIDCConnector(connectorID, params)
+	resp, err := dc.UpdateOIDCConnector(connectorID, paramsMap)
 	if err != nil {
 		dc.logger.Errorf("Error updating connector (%s): %v", connectorID, err)
 		http.Error(w, fmt.Sprintf("Error updating connector: %v", err), http.StatusInternalServerError)
@@ -784,15 +875,23 @@ func main() {
 	router := mux.NewRouter()
 
 	// Define the routes.
-	// New route with connector_sub_type
+	// Route for connectors that require a sub-type
 	router.HandleFunc("/create/{connector_type}/{connector_sub_type}", dexClient.CreateConnectorHandler).Methods("POST")
-	// Existing route without connector_sub_type (defaults to 'general')
+
+	// Route for connectors that do not require a sub-type (defaults to 'general')
 	router.HandleFunc("/create/{connector_type}", dexClient.CreateConnectorHandler).Methods("POST")
+
+	// Update connector by ID
 	router.HandleFunc("/update/{connector_id}", dexClient.UpdateConnectorByIDHandler).Methods("PUT")
+
+	// Delete connector by ID
 	router.HandleFunc("/delete/{connector_id}", dexClient.DeleteConnectorByIDHandler).Methods("DELETE")
+
+	// List connectors
 	router.HandleFunc("/list", dexClient.ListAndDescribeConnectorsHandler).Methods("GET")
 	router.HandleFunc("/list/{connector_type}", dexClient.ListAndDescribeConnectorsHandler).Methods("GET")
-	// New endpoint for supported connector types
+
+	// Endpoint to get supported connector types and their sub-types
 	router.HandleFunc("/get/supported-connector-types", dexClient.GetSupportedConnectorTypesHandler).Methods("GET")
 
 	// Apply middleware if needed (e.g., authentication, rate limiting)
