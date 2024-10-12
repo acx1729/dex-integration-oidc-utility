@@ -1,6 +1,6 @@
 # Overview
 
-This application provides a RESTful API for managing OIDC (OpenID Connect) connectors with Dex, an open-source OIDC provider. It serves as a backend service that allows users to create, update, delete, and list OIDC connectors over HTTP.
+This application provides a RESTful API for managing OIDC (OpenID Connect) connectors with Dex, an open-source OIDC provider. It serves as a backend service that allows users to create, update, delete, and list OIDC connectors over HTTP. This will be useful if you embed DexIDP in your app and want to let users manage their own OIDC.
 
 ## Key Features
 
