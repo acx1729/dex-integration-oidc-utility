@@ -15,7 +15,8 @@ import (
 
 	dexapi "github.com/dexidp/dex/api/v2"
 	"github.com/go-playground/validator/v10"
-	"github.com/gorilla/mux"
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -395,31 +396,33 @@ func (dc *DexClient) ListConnectors() ([]*dexapi.Connector, error) {
 }
 
 // CreateConnectorHandler handles the creation of connectors based on the type and sub-type specified in the URL.
-func (dc *DexClient) CreateConnectorHandler(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	connectorType, exists := vars["connector_type"]
-	connectorSubType, hasSubType := vars["connector_sub_type"]
+func (dc *DexClient) CreateConnectorHandler(c echo.Context) error {
+	connectorType := c.Param("connector_type")
+	connectorSubType := c.Param("connector_sub_type")
 
-	if !exists || strings.TrimSpace(connectorType) == "" {
+	if strings.TrimSpace(connectorType) == "" {
 		dc.logger.Warn("Missing connector_type in CreateConnectorHandler request")
-		http.Error(w, "connector_type is required in the URL path", http.StatusBadRequest)
-		return
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "connector_type is required in the URL path",
+		})
 	}
 
 	connectorTypeLower := strings.ToLower(connectorType)
 	creator, supported := connectorCreators[connectorTypeLower]
 	if !supported {
 		dc.logger.Warnf("Unsupported connector type: %s", connectorType)
-		http.Error(w, fmt.Sprintf("unsupported connector type: %s", connectorType), http.StatusBadRequest)
-		return
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("unsupported connector type: %s", connectorType),
+		})
 	}
 
 	// Decode the request body into CreateConnectorRequest
 	var reqData CreateConnectorRequest
-	if err := json.NewDecoder(r.Body).Decode(&reqData); err != nil {
+	if err := c.Bind(&reqData); err != nil {
 		dc.logger.Errorf("Invalid request body for CreateConnectorHandler: %v", err)
-		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
-		return
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("invalid request body: %v", err),
+		})
 	}
 
 	// Set the ConnectorType from URL path
@@ -427,7 +430,7 @@ func (dc *DexClient) CreateConnectorHandler(w http.ResponseWriter, r *http.Reque
 
 	// Determine the connector_sub_type
 	connectorSubTypeLower := "general" // default
-	if hasSubType && strings.TrimSpace(connectorSubType) != "" {
+	if connectorSubType != "" {
 		connectorSubTypeLower = strings.ToLower(connectorSubType)
 	} else {
 		dc.logger.Infof("No connector_sub_type specified. Defaulting to 'general'")
@@ -439,8 +442,9 @@ func (dc *DexClient) CreateConnectorHandler(w http.ResponseWriter, r *http.Reque
 	// Validate that the connector_sub_type is supported
 	if !isSupportedSubType(connectorTypeLower, connectorSubTypeLower) {
 		dc.logger.Warnf("Unsupported connector_sub_type '%s' for connector_type '%s'", connectorSubTypeLower, connectorTypeLower)
-		http.Error(w, fmt.Sprintf("unsupported connector_sub_type '%s' for connector_type '%s'", connectorSubTypeLower, connectorTypeLower), http.StatusBadRequest)
-		return
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("unsupported connector_sub_type '%s' for connector_type '%s'", connectorSubTypeLower, connectorTypeLower),
+		})
 	}
 
 	// Perform subtype-specific validation and set default values
@@ -449,8 +453,9 @@ func (dc *DexClient) CreateConnectorHandler(w http.ResponseWriter, r *http.Reque
 		// Required: issuer, client_id, client_secret
 		if strings.TrimSpace(reqData.Issuer) == "" {
 			dc.logger.Warn("Missing 'issuer' for 'general' OIDC connector")
-			http.Error(w, "issuer is required for 'general' OIDC connector", http.StatusBadRequest)
-			return
+			return c.JSON(http.StatusBadRequest, map[string]string{
+				"error": "issuer is required for 'general' OIDC connector",
+			})
 		}
 		// client_id and client_secret are already validated as required in the struct
 
@@ -468,8 +473,9 @@ func (dc *DexClient) CreateConnectorHandler(w http.ResponseWriter, r *http.Reque
 		// Required: tenant_id, client_id, client_secret
 		if strings.TrimSpace(reqData.TenantID) == "" {
 			dc.logger.Warn("Missing 'tenant_id' for 'entraid' OIDC connector")
-			http.Error(w, "tenant_id is required for 'entraid' OIDC connector", http.StatusBadRequest)
-			return
+			return c.JSON(http.StatusBadRequest, map[string]string{
+				"error": "tenant_id is required for 'entraid' OIDC connector",
+			})
 		}
 		// client_id and client_secret are already validated as required in the struct
 
@@ -502,8 +508,9 @@ func (dc *DexClient) CreateConnectorHandler(w http.ResponseWriter, r *http.Reque
 	// Additional validation through validator
 	if err := dc.validate.Struct(reqData); err != nil {
 		dc.logger.Errorf("Validation error in CreateConnectorHandler: %v", err)
-		http.Error(w, fmt.Sprintf("validation error: %v", err), http.StatusBadRequest)
-		return
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("validation error: %v", err),
+		})
 	}
 
 	// Prepare parameters map with corrected key names and include sub-type
@@ -525,8 +532,9 @@ func (dc *DexClient) CreateConnectorHandler(w http.ResponseWriter, r *http.Reque
 	resp, err := creator(dc, paramsMap)
 	if err != nil {
 		dc.logger.Errorf("Error creating connector (%s/%s): %v", connectorTypeLower, connectorSubTypeLower, err)
-		http.Error(w, fmt.Sprintf("error creating connector: %v", err), http.StatusInternalServerError)
-		return
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("error creating connector: %v", err),
+		})
 	}
 
 	response := map[string]string{
@@ -537,10 +545,7 @@ func (dc *DexClient) CreateConnectorHandler(w http.ResponseWriter, r *http.Reque
 		response["message"] = "Connector already exists."
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
-
-	dc.logger.Debug("CreateConnectorHandler response sent to client")
+	return c.JSON(http.StatusOK, response)
 }
 
 // isSupportedSubType checks if a given sub-type is supported for a connector type.
@@ -558,13 +563,11 @@ func isSupportedSubType(connectorType, subType string) bool {
 }
 
 // ListAndDescribeConnectorsHandler handles the GET /list and GET /list/{connector_type} endpoints.
-// ListAndDescribeConnectorsHandler handles the GET /list and GET /list/{connector_type} endpoints.
-func (dc *DexClient) ListAndDescribeConnectorsHandler(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	connectorType, exists := vars["connector_type"]
+func (dc *DexClient) ListAndDescribeConnectorsHandler(c echo.Context) error {
+	connectorType := c.Param("connector_type")
 
 	// Log the requested connector_type
-	if exists {
+	if connectorType != "" {
 		dc.logger.Infof("Received request to list connectors of type: %s", connectorType)
 	} else {
 		dc.logger.Info("Received request to list all connectors")
@@ -574,8 +577,9 @@ func (dc *DexClient) ListAndDescribeConnectorsHandler(w http.ResponseWriter, r *
 	connectors, err := dc.ListConnectors()
 	if err != nil {
 		dc.logger.Errorf("Error retrieving connectors: %v", err)
-		http.Error(w, fmt.Sprintf("Error retrieving connectors: %v", err), http.StatusInternalServerError)
-		return
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("Error retrieving connectors: %v", err),
+		})
 	}
 
 	dc.logger.Infof("Total connectors retrieved from Dex: %d", len(connectors))
@@ -594,7 +598,7 @@ func (dc *DexClient) ListAndDescribeConnectorsHandler(w http.ResponseWriter, r *
 		dc.logger.Debugf("Processing connector: ID=%s, Type=%s, Name=%s", connector.Id, connector.Type, connector.Name)
 
 		// If connector_type is specified, filter connectors by type
-		if exists && strings.ToLower(connectorType) != strings.ToLower(connector.Type) {
+		if connectorType != "" && strings.ToLower(connectorType) != strings.ToLower(connector.Type) {
 			dc.logger.Debugf("Skipping connector (ID=%s) due to type mismatch: expected=%s, actual=%s", connector.Id, connectorType, connector.Type)
 			continue
 		}
@@ -621,47 +625,33 @@ func (dc *DexClient) ListAndDescribeConnectorsHandler(w http.ResponseWriter, r *
 	}
 
 	// If a specific connector_type was requested but no connectors found, return 404
-	if exists && len(connectorInfos) == 0 {
+	if connectorType != "" && len(connectorInfos) == 0 {
 		dc.logger.Warnf("No connectors found for type: %s", connectorType)
-		http.Error(w, fmt.Sprintf("No connectors found for type: %s", connectorType), http.StatusNotFound)
-		return
+		return c.JSON(http.StatusNotFound, map[string]string{
+			"error": fmt.Sprintf("No connectors found for type: %s", connectorType),
+		})
 	}
 
-	// Marshal the connectorInfos to JSON
-	response, err := json.Marshal(connectorInfos)
-	if err != nil {
-		dc.logger.Errorf("Error marshaling connector information: %v", err)
-		http.Error(w, fmt.Sprintf("Error preparing response: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Set the appropriate headers and write the response
-	w.Header().Set("Content-Type", "application/json")
-	if _, err := w.Write(response); err != nil {
-		dc.logger.Errorf("Error writing response to client: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	dc.logger.Debug("Successfully sent connector list to client")
+	return c.JSON(http.StatusOK, connectorInfos)
 }
 
 // UpdateConnectorByIDHandler handles the updating of a connector based on connector_id in the path.
-func (dc *DexClient) UpdateConnectorByIDHandler(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	connectorID, exists := vars["connector_id"]
-	if !exists || strings.TrimSpace(connectorID) == "" {
+func (dc *DexClient) UpdateConnectorByIDHandler(c echo.Context) error {
+	connectorID := c.Param("connector_id")
+	if strings.TrimSpace(connectorID) == "" {
 		dc.logger.Warn("Missing connector_id in UpdateConnectorByIDHandler request")
-		http.Error(w, "connector_id is required in the URL path", http.StatusBadRequest)
-		return
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "connector_id is required in the URL path",
+		})
 	}
 
 	var reqData CreateConnectorRequest
 
-	if err := json.NewDecoder(r.Body).Decode(&reqData); err != nil {
+	if err := c.Bind(&reqData); err != nil {
 		dc.logger.Errorf("Invalid request body for UpdateConnectorByIDHandler: %v", err)
-		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
-		return
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("Invalid request body: %v", err),
+		})
 	}
 
 	// Set the ConnectorType from URL path if not provided in the body
@@ -681,8 +671,9 @@ func (dc *DexClient) UpdateConnectorByIDHandler(w http.ResponseWriter, r *http.R
 	// Validate that the connector_sub_type is supported
 	if !isSupportedSubType(strings.ToLower(reqData.ConnectorType), connectorSubTypeLower) {
 		dc.logger.Warnf("Unsupported connector_sub_type '%s' for connector_type '%s'", connectorSubTypeLower, reqData.ConnectorType)
-		http.Error(w, fmt.Sprintf("unsupported connector_sub_type '%s' for connector_type '%s'", connectorSubTypeLower, reqData.ConnectorType), http.StatusBadRequest)
-		return
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("unsupported connector_sub_type '%s' for connector_type '%s'", connectorSubTypeLower, reqData.ConnectorType),
+		})
 	}
 
 	// Perform subtype-specific validation and set default values if needed
@@ -691,8 +682,9 @@ func (dc *DexClient) UpdateConnectorByIDHandler(w http.ResponseWriter, r *http.R
 		// Required: issuer, client_id, client_secret
 		if strings.TrimSpace(reqData.Issuer) == "" {
 			dc.logger.Warn("Missing 'issuer' for 'general' OIDC connector update")
-			http.Error(w, "issuer is required for 'general' OIDC connector update", http.StatusBadRequest)
-			return
+			return c.JSON(http.StatusBadRequest, map[string]string{
+				"error": "issuer is required for 'general' OIDC connector update",
+			})
 		}
 		// client_id and client_secret are already validated as required in the struct
 
@@ -700,8 +692,9 @@ func (dc *DexClient) UpdateConnectorByIDHandler(w http.ResponseWriter, r *http.R
 		// Required: tenant_id, client_id, client_secret
 		if strings.TrimSpace(reqData.TenantID) == "" {
 			dc.logger.Warn("Missing 'tenant_id' for 'entraid' OIDC connector update")
-			http.Error(w, "tenant_id is required for 'entraid' OIDC connector update", http.StatusBadRequest)
-			return
+			return c.JSON(http.StatusBadRequest, map[string]string{
+				"error": "tenant_id is required for 'entraid' OIDC connector update",
+			})
 		}
 		// client_id and client_secret are already validated as required in the struct
 
@@ -711,15 +704,17 @@ func (dc *DexClient) UpdateConnectorByIDHandler(w http.ResponseWriter, r *http.R
 		// client_id and client_secret are already validated as required in the struct
 
 	default:
-		http.Error(w, fmt.Sprintf("unsupported connector_sub_type: %s", reqData.ConnectorSubType), http.StatusBadRequest)
-		return
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("unsupported connector_sub_type: %s", reqData.ConnectorSubType),
+		})
 	}
 
 	// Validate the request payload
 	if err := dc.validate.Struct(reqData); err != nil {
 		dc.logger.Errorf("Validation error in UpdateConnectorByIDHandler: %v", err)
-		http.Error(w, fmt.Sprintf("Validation error: %v", err), http.StatusBadRequest)
-		return
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("validation error: %v", err),
+		})
 	}
 
 	// Prepare parameters map
@@ -738,8 +733,9 @@ func (dc *DexClient) UpdateConnectorByIDHandler(w http.ResponseWriter, r *http.R
 	resp, err := dc.UpdateOIDCConnector(connectorID, paramsMap)
 	if err != nil {
 		dc.logger.Errorf("Error updating connector (%s): %v", connectorID, err)
-		http.Error(w, fmt.Sprintf("Error updating connector: %v", err), http.StatusInternalServerError)
-		return
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("Error updating connector: %v", err),
+		})
 	}
 
 	response := map[string]string{
@@ -750,27 +746,25 @@ func (dc *DexClient) UpdateConnectorByIDHandler(w http.ResponseWriter, r *http.R
 		response["message"] = "Connector not found for update."
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
-
-	dc.logger.Debug("UpdateConnectorByIDHandler response sent to client")
+	return c.JSON(http.StatusOK, response)
 }
 
 // DeleteConnectorByIDHandler handles the deletion of a connector based on connector_id in the path.
-func (dc *DexClient) DeleteConnectorByIDHandler(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	connectorID, exists := vars["connector_id"]
-	if !exists || strings.TrimSpace(connectorID) == "" {
+func (dc *DexClient) DeleteConnectorByIDHandler(c echo.Context) error {
+	connectorID := c.Param("connector_id")
+	if strings.TrimSpace(connectorID) == "" {
 		dc.logger.Warn("Missing connector_id in DeleteConnectorByIDHandler request")
-		http.Error(w, "connector_id is required in the URL path", http.StatusBadRequest)
-		return
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "connector_id is required in the URL path",
+		})
 	}
 
 	resp, err := dc.DeleteConnectorByID(connectorID)
 	if err != nil {
 		dc.logger.Errorf("Error deleting connector by ID (%s): %v", connectorID, err)
-		http.Error(w, fmt.Sprintf("Error deleting connector: %v", err), http.StatusInternalServerError)
-		return
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("Error deleting connector: %v", err),
+		})
 	}
 
 	response := map[string]string{
@@ -781,14 +775,11 @@ func (dc *DexClient) DeleteConnectorByIDHandler(w http.ResponseWriter, r *http.R
 		response["message"] = "Connector not found for deletion."
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
-
-	dc.logger.Debug("DeleteConnectorByIDHandler response sent to client")
+	return c.JSON(http.StatusOK, response)
 }
 
 // GetSupportedConnectorTypesHandler handles the GET /get/supported-connector-types endpoint.
-func (dc *DexClient) GetSupportedConnectorTypesHandler(w http.ResponseWriter, r *http.Request) {
+func (dc *DexClient) GetSupportedConnectorTypesHandler(c echo.Context) error {
 	// Define a struct to represent each connector type and its sub-types.
 	type ConnectorTypeInfo struct {
 		ConnectorType string   `json:"connector_type"`
@@ -806,18 +797,7 @@ func (dc *DexClient) GetSupportedConnectorTypesHandler(w http.ResponseWriter, r 
 	}
 
 	// Marshal the connectors slice to JSON.
-	response, err := json.Marshal(connectors)
-	if err != nil {
-		dc.logger.Errorf("Error marshaling supported connector types: %v", err)
-		http.Error(w, fmt.Sprintf("Error retrieving supported connector types: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Set the Content-Type header and write the response.
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(response)
-
-	dc.logger.Debug("GetSupportedConnectorTypesHandler response sent to client")
+	return c.JSON(http.StatusOK, connectors)
 }
 
 // main function sets up the server and routes.
@@ -871,34 +851,38 @@ func main() {
 		}
 	}()
 
-	// Initialize the router.
-	router := mux.NewRouter()
+	// Initialize Echo
+	e := echo.New()
 
-	// Define the routes.
+	// Middleware
+	e.Use(middleware.LoggerWithConfig(middleware.LoggerConfig{
+		Format: "method=${method}, uri=${uri}, status=${status}\n",
+	}))
+	e.Use(middleware.Recover())
+
+	// Routes
 	// Route for connectors that require a sub-type
-	router.HandleFunc("/create/{connector_type}/{connector_sub_type}", dexClient.CreateConnectorHandler).Methods("POST")
+	e.POST("/create/:connector_type/:connector_sub_type", dexClient.CreateConnectorHandler)
 
 	// Route for connectors that do not require a sub-type (defaults to 'general')
-	router.HandleFunc("/create/{connector_type}", dexClient.CreateConnectorHandler).Methods("POST")
+	e.POST("/create/:connector_type", dexClient.CreateConnectorHandler)
 
 	// Update connector by ID
-	router.HandleFunc("/update/{connector_id}", dexClient.UpdateConnectorByIDHandler).Methods("PUT")
+	e.PUT("/update/:connector_id", dexClient.UpdateConnectorByIDHandler)
 
 	// Delete connector by ID
-	router.HandleFunc("/delete/{connector_id}", dexClient.DeleteConnectorByIDHandler).Methods("DELETE")
+	e.DELETE("/delete/:connector_id", dexClient.DeleteConnectorByIDHandler)
 
 	// List connectors
-	router.HandleFunc("/list", dexClient.ListAndDescribeConnectorsHandler).Methods("GET")
-	router.HandleFunc("/list/{connector_type}", dexClient.ListAndDescribeConnectorsHandler).Methods("GET")
+	e.GET("/list", dexClient.ListAndDescribeConnectorsHandler)
+	e.GET("/list/:connector_type", dexClient.ListAndDescribeConnectorsHandler)
 
 	// Endpoint to get supported connector types and their sub-types
-	router.HandleFunc("/get/supported-connector-types", dexClient.GetSupportedConnectorTypesHandler).Methods("GET")
+	e.GET("/get/supported-connector-types", dexClient.GetSupportedConnectorTypesHandler)
 
-	// Apply middleware if needed (e.g., authentication, rate limiting)
-
-	// Start the HTTP server.
+	// Start the server
 	logger.Infof("Starting server on %s...", *serverAddress)
-	if err := http.ListenAndServe(*serverAddress, router); err != nil {
-		logger.Fatalf("Server failed to start: %v", err)
+	if err := e.Start(*serverAddress); err != nil && err != http.ErrServerClosed {
+		logger.Fatalf("Echo server failed to start: %v", err)
 	}
 }
